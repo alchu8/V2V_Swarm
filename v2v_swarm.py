@@ -39,6 +39,7 @@ import matplotlib.pyplot as plt
 import concurrent.futures
 import csv
 from collections import defaultdict
+from scipy.spatial import ConvexHull
 
 
 @dataclass
@@ -50,7 +51,7 @@ class Config:
     max_battery = 1.0
     task_rate: float = 0.06
     task_energy_cost: float = 0.18
-    low_soc_threshold: float = 0.25
+    low_soc_threshold: float = 0.25 # TODO dynamic threshold
     transfer_rate: float = 0.15
     v2v_enabled: bool = True
     immobilize_on_empty: bool = True
@@ -434,15 +435,16 @@ def run(config: Config = None, seed: int = 0):
     state = SimState(config, seed)
     solo_reach = 1.0 / (2.0 * config.alpha)
     metrics = {
-        'tasks_done': 0, 'tasks_expired': 0, 'mean_peak_reach': 0.0,
-        'peak_reach': 0.0,
+        'tasks_done': 0, 'tasks_expired': 0, 'mean_peak_reach': 0.0, 'mean_area': 0.0,
+        'peak_reach': 0.0, 'peak_area': 0.0,
         'time_at_outer80': 0, 'time_past_solo': 0, 'total_robot_time': 0,
         'peak_lost': 0,
         'soc_trace': [], 'reach_trace': [],
     }
-    prev_mean_peak_reach = np.inf
+    #prev_mean_peak_reach = np.inf
 
     norm_reach_sum = 0.0
+    norm_area_sum = 0.0
     for step in range(config.max_steps):
     #step = 0
     #while np.abs(metrics['mean_peak_reach'] - prev_mean_peak_reach) > 1e-2:
@@ -451,15 +453,31 @@ def run(config: Config = None, seed: int = 0):
         metrics['tasks_expired'] += ed
         metrics['peak_lost'] = max(metrics['peak_lost'], int(np.sum(state.mode == 3)))
 
-        d_from = compute_d_from_depot(state) # TODO area coverage metric 
+        d_from = compute_d_from_depot(state)
         norm_reach = float(d_from.max()) / solo_reach
         norm_reach_sum += norm_reach
         metrics['mean_peak_reach'] = norm_reach_sum / (step+1)
         # step += 1
         # prev_mean_peak_reach = metrics['mean_peak_reach']
-        metrics['peak_reach'] = max(metrics['peak_reach'], norm_reach)
+        metrics['peak_reach'] = max(metrics['peak_reach'], norm_reach) # peak of all time
         metrics['time_past_solo'] += int(np.sum(d_from > solo_reach))
         metrics['time_at_outer80'] += int(np.sum(d_from > 0.8 * solo_reach))
+        idx = np.where(state.mode != 3)[0]
+        if len(idx) < 3:
+            hull = None
+        else:
+            points = state.pos[idx]
+            # Check collinearity using first 3 points
+            p0, p1, p2 = points[:3]
+            area = 0.5 * np.abs((p1[0] - p0[0]) * (p2[1] - p0[1]) - (p1[1] - p0[1]) * (p2[0] - p0[0]))
+            if area < 1e-6:  # Collinear points
+                hull = None
+            else:
+                hull = ConvexHull(state.pos[idx])
+                norm_area = hull.volume / (config.world_size * config.world_size)
+                metrics['peak_area'] = max(metrics['peak_area'], norm_area) # peak of all time
+                norm_area_sum += norm_area
+        metrics['mean_area'] = norm_area_sum / (step+1)
         metrics['total_robot_time'] += config.num_robots
 
         if step % 50 == 0:
@@ -626,6 +644,10 @@ def run_animated(config: Config = None, seed: int = 0):
     reach_sum = 0.0
     reach_samples = 0
     mean_peak_reach = 0.0
+    area_sum = 0.0
+    mean_area = 0.0
+    hull = None
+    idx = []
 
     running = True
     try:
@@ -661,6 +683,10 @@ def run_animated(config: Config = None, seed: int = 0):
                     reach_sum += peak_now
                     reach_samples += 1
                     mean_peak_reach = reach_sum / reach_samples
+                    idx = np.where(state.mode != 3)[0]
+                    hull = ConvexHull(state.pos[idx])
+                    area_sum += hull.volume / (L * L)
+                    mean_area = area_sum / reach_samples
 
             # -- Draw --
             screen.fill(PAPER)
@@ -725,6 +751,10 @@ def run_animated(config: Config = None, seed: int = 0):
                 fill = max(0, min(bw - 2, int((bw - 2) * state.soc[i])))
                 pygame.draw.rect(screen, c, (bx + 1, by + 1, fill, bh - 2))
 
+            # draw the hull outline
+            if hull and len(idx) >= 3:
+                pygame.draw.polygon(screen, RED, [w2s(state.pos[idx[i], 0], state.pos[idx[i], 1]) for i in hull.vertices], 1)
+
             # HUD
             d_from = compute_d_from_depot(state)
             peak_now = float(d_from.max()) / solo_reach
@@ -746,6 +776,7 @@ def run_animated(config: Config = None, seed: int = 0):
                 (f"Mean SoC:      {state.soc.mean():.2f}", font, INK),
                 (f"Current reach: {peak_now:.2f}x", font, INK),
                 (f"Mean peak reach:    {mean_peak_reach:.2f}x", font, INK),
+                (f"Mean area:    {mean_area:.2f}x", font, INK),
                 (f"Robots alive: {num_alive}", font, INK),
                 ("", font, INK),
                 ("CONTROLS", big_font, INK),
@@ -804,16 +835,16 @@ def main():
         print()
         raise SystemExit(1)
 
-    num_robots_list = [10, 50]
-    num_refuelers_list = [1, 3]
-    radius_list = [0.3, 0.5]
+    num_robots_list = [10, 50, 100, 150]
+    num_refuelers_list = [1, 3, 5]
+    radius_list = [0.25, 0.5, 0.75]
     rng = np.random.default_rng()
     seeds_list = rng.integers(0, 1000000, size=10)
     v2v_list = [False, True]
     # figs = []
     with open("output.csv", "w", encoding="utf-8") as file:
         writer = csv.writer(file)
-        writer.writerow(["V2V", "Seed", "Num Refuelers", "Num Robots", "Refueler Radius", "Mean Peak Reach", "Time Past Solo", "Num Stranded"])
+        writer.writerow(["V2V", "Seed", "Num Refuelers", "Num Robots", "Refueler Radius", "Peak Reach", "Time Past Solo", "Num Stranded", "Peak Area"])
         with concurrent.futures.ProcessPoolExecutor() as executor:
             futures = []
             for v2v in v2v_list:
@@ -825,64 +856,79 @@ def main():
                             for seed in seeds_list:
                                 cfg = Config(world_size=500.0, num_robots=nr, num_refuelers=nrf, refueler_radius=radius, alpha=0.0030, v2v_enabled=v2v)
                                 futures.append(executor.submit(run, cfg, seed)) # sequential
-            mean_peak_reach = []
+            peak_reach_list = []
             time_past_solo = []
             num_stranded_list = []
+            peak_area_list = []
             for future in concurrent.futures.as_completed(futures):
                 metrics = future.result()
-                num_stranded_list.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['lost']))
-                writer.writerow([metrics['config'].v2v_enabled, metrics['seed'], metrics['config'].num_refuelers, metrics['config'].num_robots, metrics['config'].refueler_radius, metrics['mean_peak_reach'], metrics['time_past_solo'], metrics['lost']])
+                writer.writerow([metrics['config'].v2v_enabled, metrics['seed'], metrics['config'].num_refuelers, metrics['config'].num_robots, metrics['config'].refueler_radius, f"{metrics['peak_reach']:.4f}", metrics['time_past_solo'], metrics['lost'], f"{metrics['peak_area']:.4f}"])
                 # include all the seed runs for each parameter configuration
-                mean_peak_reach.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['mean_peak_reach']))
+                peak_reach_list.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['peak_reach']))
                 time_past_solo.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['time_past_solo']))
-            # Group values by their key, a dictionary mapping tuples to lists
-            grouped_peak_data = defaultdict(list)
+                num_stranded_list.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['lost']))
+                peak_area_list.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['peak_area']))
+            # Group values by their key (parameter configuration), a dictionary mapping tuples to lists
+            grouped_peak_reach_data = defaultdict(list)
             grouped_time_data = defaultdict(list)
             grouped_stranded_data = defaultdict(list)
-            for i in range(len(mean_peak_reach)):
-                key = (mean_peak_reach[i][0], mean_peak_reach[i][1], mean_peak_reach[i][2], mean_peak_reach[i][3])
-                grouped_peak_data[key].append(mean_peak_reach[i][4])
+            grouped_peak_area_data = defaultdict(list)
+            for i in range(len(peak_reach_list)):
+                key = (peak_reach_list[i][0], peak_reach_list[i][1], peak_reach_list[i][2], peak_reach_list[i][3])
+                grouped_peak_reach_data[key].append(peak_reach_list[i][4])
                 grouped_time_data[key].append(time_past_solo[i][4])
                 grouped_stranded_data[key].append(num_stranded_list[i][4])
+                grouped_peak_area_data[key].append(peak_area_list[i][4])
             # Calculate the average for each key = averaged over all the seed runs for each parameter configuration
-            averages_peak = {key: sum(values) / len(values) for key, values in grouped_peak_data.items()}
+            averages_peak_reach = {key: sum(values) / len(values) for key, values in grouped_peak_reach_data.items()}
             averages_time = {key: sum(values) / len(values) for key, values in grouped_time_data.items()}
             averages_stranded = {key: sum(values) / len(values) for key, values in grouped_stranded_data.items()}
-            for key, _ in averages_peak.items():
+            averages_peak_area = {key: sum(values) / len(values) for key, values in grouped_peak_area_data.items()}
+            for key, _ in averages_peak_reach.items():
                 print('V2V: ' + str(key[0]) + ', Num Robots: ' + str(key[1]) + ', Num Refuelers: ' + str(key[2]) + ', Radius: ' + str(key[3]))
-                print('Mean Peak Reach: ' + str(averages_peak[key]) + ', Time Past Solo: ' + str(averages_time[key]) + ', Mean Num Stranded: ' + str(averages_stranded[key]))
+                print('Peak Reach: ' + "{:.4f}".format(averages_peak_reach[key]) + ', Time Past Solo: ' + str(averages_time[key]) + ', Num Stranded: ' + str(averages_stranded[key]) + ', Peak Area: ' + "{:.4f}".format(averages_peak_area[key]))
             for v2v in v2v_list:
                 fig, axes = plt.subplots(len(radius_list), 2, figsize=(14, 6), subplot_kw={'projection': '3d'})
                 fig.suptitle('v2v: ' + str(v2v))
                 for i in range(len(radius_list)):
                     radius = radius_list[i]
                     # Create 3D plots with constant v2v and radius
-                    filtered_peak_averages = {k: averages_peak[k] for k,_ in averages_peak.items() if k[3] == radius and k[0] == v2v}
+                    filtered_peak_reach_averages = {k: averages_peak_reach[k] for k,_ in averages_peak_reach.items() if k[3] == radius and k[0] == v2v}
+                    filtered_peak_area_averages = {k: averages_peak_area[k] for k,_ in averages_peak_area.items() if k[3] == radius and k[0] == v2v}
                     filtered_time_averages = {k: averages_time[k] for k,_ in averages_time.items() if k[3] == radius and k[0] == v2v}
-                    x_peak = []
-                    y_peak = []
-                    z_peak = []
+                    x_peak_reach = []
+                    y_peak_reach = []
+                    z_peak_reach = []
                     x_time = []
                     y_time = []
                     z_time = []
-                    for key, value in filtered_peak_averages.items():
-                        x_peak.append(key[1]) # num_robots
-                        y_peak.append(key[2]) # num_refuelers
-                        z_peak.append(value)
+                    x_peak_area = []
+                    y_peak_area = []
+                    z_peak_area = []
+                    for key, value in filtered_peak_reach_averages.items():
+                        x_peak_reach.append(key[1]) # num_robots
+                        y_peak_reach.append(key[2]) # num_refuelers
+                        z_peak_reach.append(value)
                     for key, value in filtered_time_averages.items():
                         x_time.append(key[1])
                         y_time.append(key[2])
                         z_time.append(value)
-                    plot1 = axes[i, 0].scatter(x_peak, y_peak, z_peak, c=z_peak, cmap='viridis', s=40)
+                    for key, value in filtered_peak_area_averages.items():
+                        x_peak_area.append(key[1])
+                        y_peak_area.append(key[2])
+                        z_peak_area.append(value)
+                    axes[i, 0].scatter(x_peak_reach, y_peak_reach, z_peak_reach, c='blue', label='Peak Reach')
+                    axes[i, 0].scatter(x_peak_area, y_peak_area, z_peak_area, c='green', label='Peak Area')
+                    axes[i, 0].legend()
                     axes[i, 0].set_xlabel('Num Robots')
                     axes[i, 0].set_ylabel('Num Refuelers')
-                    axes[i, 0].set_zlabel('Mean Peak Reach')
+                    axes[i, 0].set_zlabel('x solo reach or world')
                     axes[i, 0].set_title(f'radius={radius}')
-                    fig.colorbar(plot1, ax=axes[i, 0], shrink=0.5, aspect=10, pad=0.1)
+                    #fig.colorbar(plot1, ax=axes[i, 0], shrink=0.5, aspect=10, pad=0.1)
                     plot2 = axes[i, 1].scatter(x_time, y_time, z_time, c=z_time, cmap='viridis', s=40)
                     axes[i, 1].set_xlabel('Num Robots')
                     axes[i, 1].set_ylabel('Num Refuelers')
-                    axes[i, 1].set_zlabel('Mean Time Past Solo')
+                    axes[i, 1].set_zlabel('Time Past Solo (s)')
                     axes[i, 1].set_title(f'radius={radius}')
                     fig.colorbar(plot2, ax=axes[i, 1], shrink=0.5, aspect=10, pad=0.1)
                 plt.tight_layout()
@@ -957,5 +1003,5 @@ def main_anim():
 
 
 if __name__ == '__main__':
-    main_anim()
+    main()
 
