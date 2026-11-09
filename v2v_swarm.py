@@ -844,7 +844,7 @@ def main():
     # figs = []
     with open("output.csv", "w", encoding="utf-8") as file:
         writer = csv.writer(file)
-        writer.writerow(["V2V", "Seed", "Num Refuelers", "Num Robots", "Refueler Radius", "Peak Reach", "Time Past Solo", "Num Stranded", "Peak Area"])
+        writer.writerow(["V2V", "Seed", "Num Refuelers", "Num Robots", "Refueler Radius", "Peak Reach", "Time Past Solo per capita", "Num Stranded", "Peak Area"])
         with concurrent.futures.ProcessPoolExecutor() as executor:
             futures = []
             for v2v in v2v_list:
@@ -857,15 +857,15 @@ def main():
                                 cfg = Config(world_size=500.0, num_robots=nr, num_refuelers=nrf, refueler_radius=radius, alpha=0.0030, v2v_enabled=v2v)
                                 futures.append(executor.submit(run, cfg, seed)) # sequential
             peak_reach_list = []
-            time_past_solo = []
+            time_past_solo = [] # per capita
             num_stranded_list = []
             peak_area_list = []
             for future in concurrent.futures.as_completed(futures):
                 metrics = future.result()
-                writer.writerow([metrics['config'].v2v_enabled, metrics['seed'], metrics['config'].num_refuelers, metrics['config'].num_robots, metrics['config'].refueler_radius, f"{metrics['peak_reach']:.4f}", metrics['time_past_solo'], metrics['lost'], f"{metrics['peak_area']:.4f}"])
+                writer.writerow([metrics['config'].v2v_enabled, metrics['seed'], metrics['config'].num_refuelers, metrics['config'].num_robots, metrics['config'].refueler_radius, f"{metrics['peak_reach']:.4f}", f"{metrics['time_past_solo']/metrics['config'].num_robots:.4f}", metrics['lost'], f"{metrics['peak_area']:.4f}"])
                 # include all the seed runs for each parameter configuration
                 peak_reach_list.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['peak_reach']))
-                time_past_solo.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['time_past_solo']))
+                time_past_solo.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['time_past_solo']/metrics['config'].num_robots))
                 num_stranded_list.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['lost']))
                 peak_area_list.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['peak_area']))
             # Group values by their key (parameter configuration), a dictionary mapping tuples to lists
@@ -886,7 +886,7 @@ def main():
             averages_peak_area = {key: sum(values) / len(values) for key, values in grouped_peak_area_data.items()}
             for key, _ in averages_peak_reach.items():
                 print('V2V: ' + str(key[0]) + ', Num Robots: ' + str(key[1]) + ', Num Refuelers: ' + str(key[2]) + ', Radius: ' + str(key[3]))
-                print('Peak Reach: ' + "{:.4f}".format(averages_peak_reach[key]) + ', Time Past Solo: ' + str(averages_time[key]) + ', Num Stranded: ' + str(averages_stranded[key]) + ', Peak Area: ' + "{:.4f}".format(averages_peak_area[key]))
+                print('Peak Reach: ' + "{:.4f}".format(averages_peak_reach[key]) + ', Time Past Solo per capita: ' + "{:.4f}".format(averages_time[key]) + ', Num Stranded: ' + str(averages_stranded[key]) + ', Peak Area: ' + "{:.4f}".format(averages_peak_area[key]))
             for v2v in v2v_list:
                 fig, axes = plt.subplots(len(radius_list), 2, figsize=(14, 6), subplot_kw={'projection': '3d'})
                 fig.suptitle('v2v: ' + str(v2v))
@@ -928,7 +928,7 @@ def main():
                     plot2 = axes[i, 1].scatter(x_time, y_time, z_time, c=z_time, cmap='viridis', s=40)
                     axes[i, 1].set_xlabel('Num Robots')
                     axes[i, 1].set_ylabel('Num Refuelers')
-                    axes[i, 1].set_zlabel('Time Past Solo (s)')
+                    axes[i, 1].set_zlabel('Time Past Solo per capita (s)')
                     axes[i, 1].set_title(f'radius={radius}')
                     fig.colorbar(plot2, ax=axes[i, 1], shrink=0.5, aspect=10, pad=0.1)
                 plt.tight_layout()
