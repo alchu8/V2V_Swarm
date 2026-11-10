@@ -46,6 +46,7 @@ from scipy.spatial import ConvexHull
 class Config:
     num_robots: int = 12
     num_refuelers: int = 1
+    num_rings: int = 1
     refueler_radius: float = 0.5 # fraction of solo reach
     alpha: float = 0.0024 # battery depletion rate per unit distance traveled
     max_battery = 1.0
@@ -74,6 +75,8 @@ class SimState:
     so the step logic lives in exactly one place (step_sim below)."""
     def __init__(self, config: Config, seed: int = 0):
         self.rng = np.random.default_rng(seed)
+        assert config.num_robots >= config.num_refuelers * config.num_rings, "Number of robots must be at least the number of refuelers times the number of rings."
+        assert config.refueler_radius * config.num_rings <= 1.0, "Refueler radius times number of rings must be less than or equal to 1."
         N = config.num_robots
         L = config.world_size
         self.current_station = [None] * N
@@ -95,21 +98,22 @@ class SimState:
         self.mode = np.zeros(N, dtype=int)
         self.prev_a = self.rng.uniform(0, 2 * np.pi, size=N)
         N_stationary = config.num_refuelers
-        self.charging_loc = np.empty((N_stationary, 2))
+        self.charging_loc = np.empty((config.num_rings * N_stationary, 2))
         if N_stationary > 0:
-            self.mode[:N_stationary] = 4
+            self.mode[:config.num_rings * N_stationary] = 4 # first few are refuelers
             angle = 0
             angle_step = 2 * np.pi / N_stationary
-            for i in range(N_stationary):
-                # TODO parameterize angle
-                angle += angle_step % (2 * np.pi)
-                radius = config.refueler_radius * solo_reach
-                self.charging_loc[i] = self.depot + np.array([
-                    radius * np.cos(angle),
-                    radius * np.sin(angle)
-                ])
-                self.pos[i] = self.depot
-                self.target[i] = self.charging_loc[i].copy()
+            for ring in range(config.num_rings):
+                for i in range(N_stationary):
+                    # TODO parameterize angle
+                    angle += angle_step % (2 * np.pi)
+                    radius = config.refueler_radius * (ring + 1) * solo_reach
+                    self.charging_loc[ring * N_stationary + i] = self.depot + np.array([
+                        radius * np.cos(angle),
+                        radius * np.sin(angle)
+                    ])
+                    self.pos[ring * N_stationary + i] = self.depot
+                    self.target[ring * N_stationary + i] = self.charging_loc[ring * N_stationary + i].copy()
         self.task_pos = np.empty((0, 2))
         self.task_ttl = np.empty(0, dtype=int)
         self.spatial_grid = SpatialGrid(world_size=config.world_size, cell_size=config.comm_range)
@@ -163,13 +167,14 @@ def is_safe_state(state, config, i, pos, batt, v2v_enabled):
     reachability, which is exactly why conservative solo motion never strands a
     robot: the filter below never lets one step outside the still-returnable set.
     """
+    # TODO improve number of stranded robots
     depot = state.depot
     if batt >= config.alpha * np.linalg.norm(pos - depot):
         return True
     if not v2v_enabled:
         return False
     for j in range(config.num_robots):
-        if j == i or state.mode[j] not in [0, 4]:  # allow stationary (mode 4) as helpers
+        if j == i or state.mode[j] not in [4]:  # TODO future: allow wandering peer to top up others
             continue
         d_jD = np.linalg.norm(state.pos[j] - depot)
         d_ij = np.linalg.norm(pos - state.pos[j])
@@ -285,7 +290,7 @@ def step_sim(state: SimState, config: Config, v2v_enabled: bool):
             d_target = np.linalg.norm(state.target[i] - state.pos[i])
         
         # Refueler trigger: return once SoC drops below the threshold
-        if (state.mode[i] == 4) and state.soc[i] < config.low_soc_threshold:
+        if (state.mode[i] == 4) and state.soc[i] < config.low_soc_threshold: # TODO refueler threshold
             state.mode[i] = 5 # refueler returning to depot
             state.target[i] = state.depot.copy()
             d_target = np.linalg.norm(state.target[i] - state.pos[i])
@@ -338,8 +343,8 @@ def step_sim(state: SimState, config: Config, v2v_enabled: bool):
         # boundary), commit toward the depot anyway and let the return logic recover.
         # Home/immobilized modes are not filtered -- a returning robot commits.
         if d_target > 0:
-            s = min(config.move_step, d_target)
-            step_dir = (state.target[i] - state.pos[i]) / d_target
+            s = min(config.move_step, d_target) # step size
+            step_dir = (state.target[i] - state.pos[i]) / d_target # unit vector
             if state.mode[i] == 0:
                 cand = state.pos[i] + step_dir * s
                 cand_batt = state.soc[i] - config.alpha * s
@@ -347,14 +352,14 @@ def step_sim(state: SimState, config: Config, v2v_enabled: bool):
                     to_depot = state.depot - state.pos[i]
                     dd = np.linalg.norm(to_depot)
                     if dd > 1e-9:
-                        depot_dir = to_depot / dd
+                        depot_dir = to_depot / dd # unit vector to depot
                         resolved = False
                         for w in (0.25, 0.5, 0.75, 1.0):
-                            bd = (1.0 - w) * step_dir + w * depot_dir
-                            nm = np.linalg.norm(bd)
+                            bd = (1.0 - w) * step_dir + w * depot_dir # weighted average of step direction and depot direction
+                            nm = np.linalg.norm(bd) # normalize the weighted direction
                             if nm < 1e-9:
                                 continue
-                            bd = bd / nm
+                            bd = bd / nm # unit vector of the weighted direction
                             if is_safe_state(state, config, i, state.pos[i] + bd * s,
                                              state.soc[i] - config.alpha * s, v2v_enabled):
                                 step_dir = bd
@@ -835,9 +840,10 @@ def main():
         print()
         raise SystemExit(1)
 
-    num_robots_list = [10, 50, 100, 150]
+    num_robots_list = [50, 100, 150]
+    num_rings = 2
     num_refuelers_list = [1, 3, 5]
-    radius_list = [0.25, 0.5, 0.75]
+    radius_list = [0.3]
     rng = np.random.default_rng()
     seeds_list = rng.integers(0, 1000000, size=10)
     v2v_list = [False, True]
@@ -854,7 +860,7 @@ def main():
                     for nrf in num_refuelers_list:
                         for radius in radius_list:
                             for seed in seeds_list:
-                                cfg = Config(world_size=500.0, num_robots=nr, num_refuelers=nrf, refueler_radius=radius, alpha=0.0030, v2v_enabled=v2v)
+                                cfg = Config(world_size=500.0, num_robots=nr, num_refuelers=nrf, refueler_radius=radius, num_rings=num_rings, alpha=0.0030, v2v_enabled=v2v)
                                 futures.append(executor.submit(run, cfg, seed)) # sequential
             peak_reach_list = []
             time_past_solo = [] # per capita
@@ -862,12 +868,12 @@ def main():
             peak_area_list = []
             for future in concurrent.futures.as_completed(futures):
                 metrics = future.result()
-                writer.writerow([metrics['config'].v2v_enabled, metrics['seed'], metrics['config'].num_refuelers, metrics['config'].num_robots, metrics['config'].refueler_radius, f"{metrics['peak_reach']:.4f}", f"{metrics['time_past_solo']/metrics['config'].num_robots:.4f}", metrics['lost'], f"{metrics['peak_area']:.4f}"])
+                writer.writerow([metrics['config'].v2v_enabled, metrics['seed'], metrics['config'].num_rings*metrics['config'].num_refuelers, metrics['config'].num_robots, metrics['config'].refueler_radius, f"{metrics['peak_reach']:.4f}", f"{metrics['time_past_solo']/metrics['config'].num_robots:.4f}", metrics['lost'], f"{metrics['peak_area']:.4f}"])
                 # include all the seed runs for each parameter configuration
-                peak_reach_list.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['peak_reach']))
-                time_past_solo.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['time_past_solo']/metrics['config'].num_robots))
-                num_stranded_list.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['lost']))
-                peak_area_list.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['peak_area']))
+                peak_reach_list.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_rings*metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['peak_reach']))
+                time_past_solo.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_rings*metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['time_past_solo']/metrics['config'].num_robots)) # TODO discount dead and refueler robots
+                num_stranded_list.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_rings*metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['lost']))
+                peak_area_list.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_rings*metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['peak_area']))
             # Group values by their key (parameter configuration), a dictionary mapping tuples to lists
             grouped_peak_reach_data = defaultdict(list)
             grouped_time_data = defaultdict(list)
@@ -917,20 +923,21 @@ def main():
                         x_peak_area.append(key[1])
                         y_peak_area.append(key[2])
                         z_peak_area.append(value)
-                    axes[i, 0].scatter(x_peak_reach, y_peak_reach, z_peak_reach, c='blue', label='Peak Reach')
-                    axes[i, 0].scatter(x_peak_area, y_peak_area, z_peak_area, c='green', label='Peak Area')
-                    axes[i, 0].legend()
-                    axes[i, 0].set_xlabel('Num Robots')
-                    axes[i, 0].set_ylabel('Num Refuelers')
-                    axes[i, 0].set_zlabel('x solo reach or world')
-                    axes[i, 0].set_title(f'radius={radius}')
+                    # TODO axes indexing depends on length of radius list
+                    axes[i*2 + 0].scatter(x_peak_reach, y_peak_reach, z_peak_reach, c='blue', label='Peak Reach')
+                    axes[i*2 + 0].scatter(x_peak_area, y_peak_area, z_peak_area, c='green', label='Peak Area')
+                    axes[i*2 + 0].legend()
+                    axes[i*2 + 0].set_xlabel('Num Robots')
+                    axes[i*2 + 0].set_ylabel('Num Refuelers')
+                    axes[i*2 + 0].set_zlabel('x solo reach or world')
+                    axes[i*2 + 0].set_title(f'radius={radius}')
                     #fig.colorbar(plot1, ax=axes[i, 0], shrink=0.5, aspect=10, pad=0.1)
-                    plot2 = axes[i, 1].scatter(x_time, y_time, z_time, c=z_time, cmap='viridis', s=40)
-                    axes[i, 1].set_xlabel('Num Robots')
-                    axes[i, 1].set_ylabel('Num Refuelers')
-                    axes[i, 1].set_zlabel('Time Past Solo per capita (s)')
-                    axes[i, 1].set_title(f'radius={radius}')
-                    fig.colorbar(plot2, ax=axes[i, 1], shrink=0.5, aspect=10, pad=0.1)
+                    plot2 = axes[i*2 + 1].scatter(x_time, y_time, z_time, c=z_time, cmap='viridis', s=40)
+                    axes[i*2 + 1].set_xlabel('Num Robots')
+                    axes[i*2 + 1].set_ylabel('Num Refuelers')
+                    axes[i*2 + 1].set_zlabel('Time Past Solo per capita (s)')
+                    axes[i*2 + 1].set_title(f'radius={radius}')
+                    fig.colorbar(plot2, ax=axes[i*2 + 1], shrink=0.5, aspect=10, pad=0.1)
                 plt.tight_layout()
                 plt.show()
 
@@ -998,7 +1005,7 @@ def main_anim():
         print()
         raise SystemExit(1)
 
-    cfg = Config(world_size=500.0, num_robots=100, num_refuelers=5, refueler_radius=0.3, alpha=0.0030, v2v_enabled=True)
+    cfg = Config(world_size=500.0, num_robots=100, num_refuelers=5, refueler_radius=0.25, num_rings=2, alpha=0.0030, v2v_enabled=True)
     run_animated(cfg, seed=632145)
 
 
