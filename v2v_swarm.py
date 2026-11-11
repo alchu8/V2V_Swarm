@@ -467,8 +467,10 @@ def run(config: Config = None, seed: int = 0):
         # step += 1
         # prev_mean_peak_reach = metrics['mean_peak_reach']
         metrics['peak_reach'] = max(metrics['peak_reach'], norm_reach) # peak of all time
-        metrics['time_past_solo'] += int(np.sum(d_from > solo_reach))
-        metrics['time_at_outer80'] += int(np.sum(d_from > 0.8 * solo_reach))
+        num_alive = len(d_from) # number of alive robots
+        if num_alive > 0:
+            metrics["time_past_solo"] += np.count_nonzero(d_from > solo_reach)/num_alive  # alive robots beyond solo reach / total alive robots
+            metrics['time_past_solo'] += np.count_nonzero(d_from > 0.8 * solo_reach)/num_alive
         idx = np.where(state.mode != 3)[0]
         if len(idx) < 3:
             hull = None
@@ -495,8 +497,13 @@ def run(config: Config = None, seed: int = 0):
     metrics['final_soc'] = state.soc.copy()
     metrics['final_mode'] = state.mode.copy()
     metrics['lost'] = int(np.sum(state.mode == 3))
-    metrics['fraction_past_solo'] = metrics['time_past_solo'] / max(1, metrics['total_robot_time'])
-    metrics['fraction_at_outer80'] = metrics['time_at_outer80'] / max(1, metrics['total_robot_time'])
+    # fraction_past_solo: Average fraction of currently alive robots beyond solo reach across all simulation steps.
+    # Example:
+    # Step 1: 2 of 10 alive robots are beyond solo reach → 20%.
+    # Step 2: 4 of 8 alive robots are beyond solo reach → 50%.
+    # Average is (20% + 50%) / 2 = 35%, meaning that, on average, 35% of the robots alive at a given step were beyond solo reach.
+    metrics['fraction_past_solo'] = metrics['time_past_solo'] / max(1, config.max_steps)
+    metrics['fraction_at_outer80'] = metrics['time_at_outer80'] / max(1, config.max_steps)
     metrics['solo_reach'] = solo_reach
     metrics['config'] = config
     metrics['seed'] = seed
@@ -870,10 +877,10 @@ def main():
             peak_area_list = []
             for future in concurrent.futures.as_completed(futures):
                 metrics = future.result()
-                writer.writerow([metrics['config'].v2v_enabled, metrics['seed'], metrics['config'].num_rings*metrics['config'].num_refuelers, metrics['config'].num_robots, metrics['config'].refueler_radius, f"{metrics['peak_reach']:.4f}", f"{metrics['time_past_solo']/metrics['config'].num_robots:.4f}", metrics['lost'], f"{metrics['peak_area']:.4f}"])
+                writer.writerow([metrics['config'].v2v_enabled, metrics['seed'], metrics['config'].num_rings*metrics['config'].num_refuelers, metrics['config'].num_robots, metrics['config'].refueler_radius, f"{metrics['peak_reach']:.4f}", f"{metrics['time_past_solo']:.4f}", metrics['lost'], f"{metrics['peak_area']:.4f}"])
                 # include all the seed runs for each parameter configuration
                 peak_reach_list.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_rings*metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['peak_reach']))
-                time_past_solo.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_rings*metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['time_past_solo']/metrics['config'].num_robots)) # TODO discount dead and refueler robots
+                time_past_solo.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_rings*metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['time_past_solo']))
                 num_stranded_list.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_rings*metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['lost']))
                 peak_area_list.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_rings*metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['peak_area']))
             # Group values by their key (parameter configuration), a dictionary mapping tuples to lists
