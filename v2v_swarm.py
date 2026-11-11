@@ -471,7 +471,7 @@ def run(config: Config = None, seed: int = 0):
         num_alive = len(d_from) # number of alive robots
         if num_alive > 0:
             metrics["time_past_solo"] += np.count_nonzero(d_from > solo_reach)/num_alive  # alive robots beyond solo reach / total alive robots
-            metrics['time_past_solo'] += np.count_nonzero(d_from > 0.8 * solo_reach)/num_alive
+            metrics['time_at_outer80'] += np.count_nonzero(d_from > 0.8 * solo_reach)/num_alive
         idx = np.where(state.mode != 3)[0]
         if len(idx) < 3:
             hull = None
