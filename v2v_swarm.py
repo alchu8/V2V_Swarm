@@ -204,6 +204,7 @@ def step_sim(state: SimState, config: Config, v2v_enabled: bool):
     N = config.num_robots
     done_delta = 0
     expired_delta = 0
+    safety_padding = 0.02  # extra SoC to avoid running dry on the depot's pad
 
     # Spawn task: annulus around the depot, matching the JS widget.
     # if rng.random() < config.task_rate and len(state.task_pos) < config.max_tasks:
@@ -289,8 +290,10 @@ def step_sim(state: SimState, config: Config, v2v_enabled: bool):
             state.target[i] = state.depot.copy()
             d_target = np.linalg.norm(state.target[i] - state.pos[i])
         
-        # Refueler trigger: return once SoC drops below the threshold
-        if (state.mode[i] == 4) and state.soc[i] < config.low_soc_threshold: # TODO refueler threshold
+        # Refueler trigger: return once SoC drops below the min energy to get back home
+        dist_home = np.linalg.norm(state.pos[i] - state.depot)
+        min_return_energy = config.alpha*dist_home + safety_padding
+        if (state.mode[i] == 4) and state.soc[i] <= min_return_energy:
             state.mode[i] = 5 # refueler returning to depot
             state.target[i] = state.depot.copy()
             d_target = np.linalg.norm(state.target[i] - state.pos[i])
@@ -299,7 +302,6 @@ def step_sim(state: SimState, config: Config, v2v_enabled: bool):
         # from a peer to get home -- never a fixed target SoC. Metered by
         # transfer_rate, so it spans several steps; the full recharge happens at
         # the depot. Peer V2V is purely an anti-stranding safety net.
-        safety_padding = 0.02 # extra SoC to avoid running dry on the depot's pad
         if state.mode[i] == 1 and v2v_enabled:
             dist_home = np.linalg.norm(state.pos[i] - state.depot)
             home_need = config.alpha * dist_home + safety_padding - state.soc[i]
