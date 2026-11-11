@@ -40,7 +40,7 @@ import csv
 from collections import defaultdict
 from scipy.spatial import ConvexHull
 
-from plotter import plot_peak_reach, plot_run
+from plotter import plot_metrics
 
 
 @dataclass
@@ -797,7 +797,8 @@ def main():
         print()
         raise SystemExit(1)
 
-    num_robots_list = [50, 100, 150]
+    # num_robots_list = [50, 100, 150]
+    num_robots_list = [20]
     num_rings = 2
     num_refuelers_list = [1, 3, 5]
     radius_list = [0.3]
@@ -851,10 +852,7 @@ def main():
                 print('Peak Reach: ' + "{:.4f}".format(averages_peak_reach[key]) + ', Time Past Solo per capita: ' + "{:.4f}".format(averages_time[key]) + ', Num Stranded: ' + str(averages_stranded[key]) + ', Peak Area: ' + "{:.4f}".format(averages_peak_area[key]))
 
             for v2v in v2v_list:
-                plot_peak_reach(radius_list, v2v, averages_peak_reach, averages_peak_area, averages_time)
-
-    # Generates diagnostic trajectory plots for a single simulation run (currently for the last simulation run)
-    plot_run(metrics)
+                plot_metrics(radius_list, v2v, averages_peak_reach, averages_peak_area, averages_time)
 
 
 def main_anim():
