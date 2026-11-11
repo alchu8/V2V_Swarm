@@ -59,3 +59,63 @@ def plot_metrics(radius_list, v2v, averages_peak_reach, averages_peak_area, aver
     plt.tight_layout()
     plt.savefig(save_path, dpi=300)
     plt.show()
+
+def plot_run(result):
+    """Static post-mortem plot of a single run."""
+    # Path to save the plot
+    project_dir = Path(__file__).resolve().parent
+    images_dir = project_dir/"images"
+    images_dir.mkdir(parents=True, exist_ok=True)  # Create the images directory if it doesn't exist yet
+    save_path = images_dir/"run.png"
+
+    config = result['config']
+    L = config.world_size
+    depot = np.array([L / 2, L / 2])
+    solo_reach = result['solo_reach']
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    ax = axes[0]
+    theta = np.linspace(0, 2 * np.pi, 100)
+    ax.plot(depot[0] + solo_reach * np.cos(theta),
+            depot[1] + solo_reach * np.sin(theta),
+            'k--', alpha=0.3, label=f'Solo-reach (1/2alpha = {solo_reach:.0f})')
+    ax.scatter(*depot, s=200, c='darkgreen', marker='o', label='Depot', zorder=10)
+
+    pos = result['final_pos']
+    mode = result['final_mode']
+    for m, (c, lab) in enumerate(zip(['steelblue', 'firebrick', 'forestgreen', 'dimgray'],
+                                     ['Wandering', 'Heading home', 'Docked', 'Lost (immobilized)'])):
+        mask = mode == m
+        if mask.any():
+            ax.scatter(pos[mask, 0], pos[mask, 1], c=c, s=60, alpha=0.7, label=lab)
+    ax.set_xlim(0, L); ax.set_ylim(0, L); ax.set_aspect('equal')
+    ax.legend(loc='upper right', fontsize=9)
+    ax.set_title('Final positions')
+    ax.grid(alpha=0.3)
+
+    ax = axes[1]
+    if result['soc_trace']:
+        steps = np.array([s[0] for s in result['soc_trace']])
+        socs = np.array([s[1] for s in result['soc_trace']])
+        for i in range(socs.shape[1]):
+            ax.plot(steps, socs[:, i], alpha=0.3, linewidth=0.8)
+        ax.plot(steps, socs.mean(axis=1), 'k-', linewidth=2, label='Mean SoC')
+    ax.axhline(config.low_soc_threshold, color='red', linestyle='--', alpha=0.5, label='Seek-charge threshold')
+    ax.set_xlabel('Simulation step')
+    ax.set_ylabel('State of charge')
+    ax.set_ylim(0, 1.05)
+    ax.legend(fontsize=9)
+    ax.set_title('SoC traces (gray = individuals; black = mean)')
+    ax.grid(alpha=0.3)
+
+    fig.suptitle(
+        f'N={config.num_robots}  alpha={config.alpha:.4f}  '
+        f'V2V={"on" if config.v2v_enabled else "off"}  |  '
+        f'Tasks done={result["tasks_done"]}  '
+        f'Peak reach={result["peak_reach"]:.2f}x  '
+        f'Time @ outer 80%={result["fraction_at_outer80"]*100:.1f}%',
+        fontsize=11,
+    )
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300)
+    plt.show()
