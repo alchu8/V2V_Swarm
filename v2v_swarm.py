@@ -462,16 +462,16 @@ def run(config: Config = None, seed: int = 0):
         metrics['peak_lost'] = max(metrics['peak_lost'], int(np.sum(state.mode == 3)))
 
         d_from = compute_d_from_depot(state)
-        norm_reach = float(d_from.max()) / solo_reach
+        norm_reach = (float(d_from.max())/solo_reach if d_from.size > 0 else 0.0)
         norm_reach_sum += norm_reach
         metrics['mean_peak_reach'] = norm_reach_sum / (step+1)
         # step += 1
         # prev_mean_peak_reach = metrics['mean_peak_reach']
         metrics['peak_reach'] = max(metrics['peak_reach'], norm_reach) # peak of all time
-        num_alive = len(d_from) # number of alive robots
-        if num_alive > 0:
-            metrics["time_past_solo"] += np.count_nonzero(d_from > solo_reach)/num_alive  # alive robots beyond solo reach / total alive robots
-            metrics['time_at_outer80'] += np.count_nonzero(d_from > 0.8 * solo_reach)/num_alive
+        num_alive_explorers = len(d_from) # number of alive explorer robots (excludes refuelers)
+        if num_alive_explorers > 0:
+            metrics["time_past_solo"] += np.count_nonzero(d_from > solo_reach)/num_alive_explorers  # alive explorer robots beyond solo reach / total alive robots
+            metrics['time_at_outer80'] += np.count_nonzero(d_from > 0.8 * solo_reach)/num_alive_explorers
         idx = np.where(state.mode != 3)[0]
         if len(idx) < 3:
             hull = None
@@ -498,11 +498,11 @@ def run(config: Config = None, seed: int = 0):
     metrics['final_soc'] = state.soc.copy()
     metrics['final_mode'] = state.mode.copy()
     metrics['lost'] = int(np.sum(state.mode == 3))
-    # fraction_past_solo: Average fraction of currently alive robots beyond solo reach across all simulation steps.
+    # fraction_past_solo: Average fraction of currently alive explorer robots beyond solo reach across all simulation steps.
     # Example:
     # Step 1: 2 of 10 alive robots are beyond solo reach → 20%.
     # Step 2: 4 of 8 alive robots are beyond solo reach → 50%.
-    # Average is (20% + 50%) / 2 = 35%, meaning that, on average, 35% of the robots alive at a given step were beyond solo reach.
+    # Average is (20% + 50%) / 2 = 35%, meaning that, on average, 35% of the alive explorer robots at a given step were beyond solo reach.
     metrics['fraction_past_solo'] = metrics['time_past_solo'] / max(1, config.max_steps)
     metrics['fraction_at_outer80'] = metrics['time_at_outer80'] / max(1, config.max_steps)
     metrics['solo_reach'] = solo_reach
@@ -511,7 +511,8 @@ def run(config: Config = None, seed: int = 0):
     return metrics
 
 def compute_d_from_depot(state):
-    idx = np.where(state.mode != 3)[0] # indices of active robots (not immobilized)
+    """Compute distances from depot for active explorer robots."""
+    idx = np.where(~np.isin(state.mode, [3, 4, 5, 6]))[0]  # Exclude immobilized robots and refuelers
     d_from = np.linalg.norm(state.pos[idx] - state.depot, axis=1)
     return d_from
 
@@ -641,7 +642,7 @@ def run_animated(config: Config = None, seed: int = 0):
                     tasks_expired += ed
                     step_counter += 1
                     d_from = compute_d_from_depot(state)
-                    peak_now = float(d_from.max()) / solo_reach
+                    peak_now = (float(d_from.max())/solo_reach if d_from.size > 0 else 0.0)
                     reach_sum += peak_now
                     reach_samples += 1
                     mean_peak_reach = reach_sum / reach_samples
@@ -719,7 +720,7 @@ def run_animated(config: Config = None, seed: int = 0):
 
             # HUD
             d_from = compute_d_from_depot(state)
-            peak_now = float(d_from.max()) / solo_reach
+            peak_now = (float(d_from.max())/solo_reach if d_from.size > 0 else 0.0)
             num_dead = np.sum(state.mode == 3)
             num_alive = config.num_robots - num_dead
 
