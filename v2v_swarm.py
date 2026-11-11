@@ -35,11 +35,12 @@ either directly or via ONE peer), and no refueler role. Bare bones to extend.
 
 from dataclasses import dataclass
 import numpy as np
-import matplotlib.pyplot as plt
 import concurrent.futures
 import csv
 from collections import defaultdict
 from scipy.spatial import ConvexHull
+
+from plotter import plot_peak_reach, plot_run
 
 
 @dataclass
@@ -514,59 +515,6 @@ def compute_d_from_depot(state):
     d_from = np.linalg.norm(state.pos[idx] - state.depot, axis=1)
     return d_from
 
-def plot_run(result):
-    """Static post-mortem plot of a single run."""
-    config = result['config']
-    L = config.world_size
-    depot = np.array([L / 2, L / 2])
-    solo_reach = result['solo_reach']
-
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-    ax = axes[0]
-    theta = np.linspace(0, 2 * np.pi, 100)
-    ax.plot(depot[0] + solo_reach * np.cos(theta),
-            depot[1] + solo_reach * np.sin(theta),
-            'k--', alpha=0.3, label=f'Solo-reach (1/2alpha = {solo_reach:.0f})')
-    ax.scatter(*depot, s=200, c='darkgreen', marker='o', label='Depot', zorder=10)
-
-    pos = result['final_pos']
-    mode = result['final_mode']
-    for m, (c, lab) in enumerate(zip(['steelblue', 'firebrick', 'forestgreen', 'dimgray'],
-                                     ['Wandering', 'Heading home', 'Docked', 'Lost (immobilized)'])):
-        mask = mode == m
-        if mask.any():
-            ax.scatter(pos[mask, 0], pos[mask, 1], c=c, s=60, alpha=0.7, label=lab)
-    ax.set_xlim(0, L); ax.set_ylim(0, L); ax.set_aspect('equal')
-    ax.legend(loc='upper right', fontsize=9)
-    ax.set_title('Final positions')
-    ax.grid(alpha=0.3)
-
-    ax = axes[1]
-    if result['soc_trace']:
-        steps = np.array([s[0] for s in result['soc_trace']])
-        socs = np.array([s[1] for s in result['soc_trace']])
-        for i in range(socs.shape[1]):
-            ax.plot(steps, socs[:, i], alpha=0.3, linewidth=0.8)
-        ax.plot(steps, socs.mean(axis=1), 'k-', linewidth=2, label='Mean SoC')
-    ax.axhline(config.low_soc_threshold, color='red', linestyle='--', alpha=0.5, label='Seek-charge threshold')
-    ax.set_xlabel('Simulation step')
-    ax.set_ylabel('State of charge')
-    ax.set_ylim(0, 1.05)
-    ax.legend(fontsize=9)
-    ax.set_title('SoC traces (gray = individuals; black = mean)')
-    ax.grid(alpha=0.3)
-
-    fig.suptitle(
-        f'N={config.num_robots}  alpha={config.alpha:.4f}  '
-        f'V2V={"on" if config.v2v_enabled else "off"}  |  '
-        f'Tasks done={result["tasks_done"]}  '
-        f'Peak reach={result["peak_reach"]:.2f}x  '
-        f'Time @ outer 80%={result["fraction_at_outer80"]*100:.1f}%',
-        fontsize=11,
-    )
-    plt.tight_layout()
-    return fig
-
 
 def run_animated(config: Config = None, seed: int = 0):
     """Interactive PyGame viewer.
@@ -856,7 +804,6 @@ def main():
     rng = np.random.default_rng()
     seeds_list = rng.integers(0, 1000000, size=10)
     v2v_list = [False, True]
-    # figs = []
     with open("output.csv", "w", encoding="utf-8") as file:
         writer = csv.writer(file)
         writer.writerow(["V2V", "Seed", "Num Refuelers", "Num Robots", "Refueler Radius", "Peak Reach", "Time Past Solo per capita", "Num Stranded", "Peak Area"])
@@ -902,85 +849,13 @@ def main():
             for key, _ in averages_peak_reach.items():
                 print('V2V: ' + str(key[0]) + ', Num Robots: ' + str(key[1]) + ', Num Refuelers: ' + str(key[2]) + ', Radius: ' + str(key[3]))
                 print('Peak Reach: ' + "{:.4f}".format(averages_peak_reach[key]) + ', Time Past Solo per capita: ' + "{:.4f}".format(averages_time[key]) + ', Num Stranded: ' + str(averages_stranded[key]) + ', Peak Area: ' + "{:.4f}".format(averages_peak_area[key]))
+
             for v2v in v2v_list:
-                fig, axes = plt.subplots(len(radius_list), 2, figsize=(14, 6), subplot_kw={'projection': '3d'})
-                fig.suptitle('v2v: ' + str(v2v))
-                for i in range(len(radius_list)):
-                    radius = radius_list[i]
-                    # Create 3D plots with constant v2v and radius
-                    filtered_peak_reach_averages = {k: averages_peak_reach[k] for k,_ in averages_peak_reach.items() if k[3] == radius and k[0] == v2v}
-                    filtered_peak_area_averages = {k: averages_peak_area[k] for k,_ in averages_peak_area.items() if k[3] == radius and k[0] == v2v}
-                    filtered_time_averages = {k: averages_time[k] for k,_ in averages_time.items() if k[3] == radius and k[0] == v2v}
-                    x_peak_reach = []
-                    y_peak_reach = []
-                    z_peak_reach = []
-                    x_time = []
-                    y_time = []
-                    z_time = []
-                    x_peak_area = []
-                    y_peak_area = []
-                    z_peak_area = []
-                    for key, value in filtered_peak_reach_averages.items():
-                        x_peak_reach.append(key[1]) # num_robots
-                        y_peak_reach.append(key[2]) # num_refuelers
-                        z_peak_reach.append(value)
-                    for key, value in filtered_time_averages.items():
-                        x_time.append(key[1])
-                        y_time.append(key[2])
-                        z_time.append(value)
-                    for key, value in filtered_peak_area_averages.items():
-                        x_peak_area.append(key[1])
-                        y_peak_area.append(key[2])
-                        z_peak_area.append(value)
-                    # TODO axes indexing depends on length of radius list
-                    axes[i*2 + 0].scatter(x_peak_reach, y_peak_reach, z_peak_reach, c='blue', label='Peak Reach')
-                    axes[i*2 + 0].scatter(x_peak_area, y_peak_area, z_peak_area, c='green', label='Peak Area')
-                    axes[i*2 + 0].legend()
-                    axes[i*2 + 0].set_xlabel('Num Robots')
-                    axes[i*2 + 0].set_ylabel('Num Refuelers')
-                    axes[i*2 + 0].set_zlabel('x solo reach or world')
-                    axes[i*2 + 0].set_title(f'radius={radius}')
-                    #fig.colorbar(plot1, ax=axes[i, 0], shrink=0.5, aspect=10, pad=0.1)
-                    plot2 = axes[i*2 + 1].scatter(x_time, y_time, z_time, c=z_time, cmap='viridis', s=40)
-                    axes[i*2 + 1].set_xlabel('Num Robots')
-                    axes[i*2 + 1].set_ylabel('Num Refuelers')
-                    axes[i*2 + 1].set_zlabel('Time Past Solo per capita (s)')
-                    axes[i*2 + 1].set_title(f'radius={radius}')
-                    fig.colorbar(plot2, ax=axes[i*2 + 1], shrink=0.5, aspect=10, pad=0.1)
-                plt.tight_layout()
-                plt.show()
+                plot_peak_reach(radius_list, v2v, averages_peak_reach, averages_peak_area, averages_time)
 
-                # fig, axes = plt.subplots(2, 2, figsize=(11, 8))
-                # fig.suptitle('v2v: ' + str(v2v))
-                # ax_mpr = axes[0,0]
-                # ax_tps = axes[0,1]
-                # ax_td = axes[1,0]
-                # ax_te = axes[1,1]
-                # ax_mpr.plot(num_robots_list, mean_peak_reach)
-                # ax_mpr.set_xlabel('fleet size')
-                # ax_mpr.set_ylabel('mean peak reach')
-                # ax_mpr.set_title('mean peak reach')
-                # ax_tps.plot(num_robots_list, time_past_solo)
-                # ax_tps.set_xlabel('fleet size')
-                # ax_tps.set_ylabel('time past solo')
-                # ax_tps.set_title('time past solo')
-                # ax_td.plot(num_robots_list, tasks_done)
-                # ax_td.set_xlabel('fleet size')
-                # ax_td.set_ylabel('tasks done')
-                # ax_td.set_title('tasks done')
-                # ax_te.plot(num_robots_list, tasks_expired)
-                # ax_te.set_xlabel('fleet size')
-                # ax_te.set_ylabel('tasks expired')
-                # ax_te.set_title('tasks expired')
-                # figs.append((fig, axes))
-                # plt.tight_layout()
-                # plt.show()
-                # fig = plt.figure(figsize=(14, 6))
-                # ax1 = fig.add_subplot(1, 2, 1, projection='3d')
-                # scatter = ax1.scatter(x, y, z, c=z, cmap='viridis', s=40)
+    # Generates diagnostic trajectory plots for a single simulation run (currently for the last simulation run)
+    plot_run(metrics)
 
-        # plt.tight_layout()
-        # plt.show()
 
 def main_anim():
     """Entry point. Runs the animated PyGame viewer. If PyGame is not
