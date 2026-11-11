@@ -797,8 +797,7 @@ def main():
         print()
         raise SystemExit(1)
 
-    # num_robots_list = [50, 100, 150]
-    num_robots_list = [20]
+    num_robots_list = [50, 100, 150]
     num_rings = 2
     num_refuelers_list = [1, 3, 5]
     radius_list = [0.3]
