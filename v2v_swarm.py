@@ -63,7 +63,7 @@ class Config:
     move_step: float = 0.5
     recharge_rate: float = 0.004
 
-    max_steps: int = 2000 # TODO new termination condition
+    max_steps: int = 2000
     task_ttl: int = 200
     max_tasks: int = 30
     task_engage_radius: float = 1.5
@@ -454,6 +454,8 @@ def run(config: Config = None, seed: int = 0):
     norm_reach_sum = 0.0
     norm_area_sum = 0.0
     for step in range(config.max_steps):
+        if(all(state.mode[~np.isin(state.mode, [4,5,6])] == 3)):
+            break
     #step = 0
     #while np.abs(metrics['mean_peak_reach'] - prev_mean_peak_reach) > 1e-2:
         dd, ed = step_sim(state, config, config.v2v_enabled)
@@ -503,8 +505,8 @@ def run(config: Config = None, seed: int = 0):
     # Step 1: 2 of 10 alive robots are beyond solo reach → 20%.
     # Step 2: 4 of 8 alive robots are beyond solo reach → 50%.
     # Average is (20% + 50%) / 2 = 35%, meaning that, on average, 35% of the alive explorer robots at a given step were beyond solo reach.
-    metrics['fraction_past_solo'] = metrics['time_past_solo'] / max(1, config.max_steps)
-    metrics['fraction_at_outer80'] = metrics['time_at_outer80'] / max(1, config.max_steps)
+    metrics['fraction_past_solo'] = metrics['time_past_solo'] / max(1, step)
+    metrics['fraction_at_outer80'] = metrics['time_at_outer80'] / max(1, step)
     metrics['solo_reach'] = solo_reach
     metrics['config'] = config
     metrics['seed'] = seed
@@ -617,7 +619,7 @@ def run_animated(config: Config = None, seed: int = 0):
         while running:
             # -- Input --
             for event in pygame.event.get():
-                if event.type == pygame.QUIT:
+                if event.type == pygame.QUIT or all(state.mode[~np.isin(state.mode, [4,5,6])] == 3):
                     running = False
                 elif event.type == pygame.KEYDOWN:
                     if event.key in (pygame.K_q, pygame.K_ESCAPE):
