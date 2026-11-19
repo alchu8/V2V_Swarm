@@ -800,16 +800,16 @@ def main():
         print()
         raise SystemExit(1)
 
-    num_robots_list = [50, 100, 150]
-    num_rings = 2
+    num_robots_list = [10, 50, 100, 150]
+    num_rings = 1
     num_refuelers_list = [1, 3, 5]
-    radius_list = [0.3]
+    radius_list = [0.25, 0.5, 0.75]
     rng = np.random.default_rng()
     seeds_list = rng.integers(0, 1000000, size=10)
     v2v_list = [False, True]
     with open("output.csv", "w", encoding="utf-8") as file:
         writer = csv.writer(file)
-        writer.writerow(["V2V", "Seed", "Num Refuelers", "Num Robots", "Refueler Radius", "Peak Reach", "Time Past Solo per capita", "Num Stranded", "Peak Area"])
+        writer.writerow(["V2V", "Seed", "Num Refuelers", "Num Robots", "Refueler Radius", "Peak Reach", "Time Past Solo per capita", "Num Stranded", "Peak Area", "Mean Peak Reach", "Mean Area"])
         with concurrent.futures.ProcessPoolExecutor() as executor:
             futures = []
             for v2v in v2v_list:
@@ -825,36 +825,47 @@ def main():
             time_past_solo = [] # per capita
             num_stranded_list = []
             peak_area_list = []
+            mean_peak_reach_list = []
+            mean_area_list = []
             for future in concurrent.futures.as_completed(futures):
                 metrics = future.result()
-                writer.writerow([metrics['config'].v2v_enabled, metrics['seed'], metrics['config'].num_rings*metrics['config'].num_refuelers, metrics['config'].num_robots, metrics['config'].refueler_radius, f"{metrics['peak_reach']:.4f}", f"{metrics['time_past_solo']:.4f}", metrics['lost'], f"{metrics['peak_area']:.4f}"])
+                writer.writerow([metrics['config'].v2v_enabled, metrics['seed'], metrics['config'].num_rings*metrics['config'].num_refuelers, metrics['config'].num_robots, metrics['config'].refueler_radius, f"{metrics['peak_reach']:.4f}", f"{metrics['time_past_solo']:.4f}", metrics['lost'], f"{metrics['peak_area']:.4f}", f"{metrics['mean_peak_reach']:.4f}", f"{metrics['mean_area']:.4f}"])
                 # include all the seed runs for each parameter configuration
                 peak_reach_list.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_rings*metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['peak_reach']))
                 time_past_solo.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_rings*metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['time_past_solo']))
                 num_stranded_list.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_rings*metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['lost']))
                 peak_area_list.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_rings*metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['peak_area']))
+                mean_peak_reach_list.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_rings*metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['mean_peak_reach']))
+                mean_area_list.append((metrics['config'].v2v_enabled, metrics['config'].num_robots, metrics['config'].num_rings*metrics['config'].num_refuelers, metrics['config'].refueler_radius, metrics['mean_area']))
             # Group values by their key (parameter configuration), a dictionary mapping tuples to lists
             grouped_peak_reach_data = defaultdict(list)
             grouped_time_data = defaultdict(list)
             grouped_stranded_data = defaultdict(list)
             grouped_peak_area_data = defaultdict(list)
+            grouped_mean_peak_reach_data = defaultdict(list)
+            grouped_mean_area_data = defaultdict(list)
             for i in range(len(peak_reach_list)):
                 key = (peak_reach_list[i][0], peak_reach_list[i][1], peak_reach_list[i][2], peak_reach_list[i][3])
                 grouped_peak_reach_data[key].append(peak_reach_list[i][4])
                 grouped_time_data[key].append(time_past_solo[i][4])
                 grouped_stranded_data[key].append(num_stranded_list[i][4])
                 grouped_peak_area_data[key].append(peak_area_list[i][4])
+                grouped_mean_peak_reach_data[key].append(mean_peak_reach_list[i][4])
+                grouped_mean_area_data[key].append(mean_area_list[i][4])
             # Calculate the average for each key = averaged over all the seed runs for each parameter configuration
             averages_peak_reach = {key: sum(values) / len(values) for key, values in grouped_peak_reach_data.items()}
             averages_time = {key: sum(values) / len(values) for key, values in grouped_time_data.items()}
             averages_stranded = {key: sum(values) / len(values) for key, values in grouped_stranded_data.items()}
             averages_peak_area = {key: sum(values) / len(values) for key, values in grouped_peak_area_data.items()}
+            averages_mean_peak_reach = {key: sum(values) / len(values) for key, values in grouped_mean_peak_reach_data.items()}
+            averages_mean_area = {key: sum(values) / len(values) for key, values in grouped_mean_area_data.items()}
             for key, _ in averages_peak_reach.items():
                 print('V2V: ' + str(key[0]) + ', Num Robots: ' + str(key[1]) + ', Num Refuelers: ' + str(key[2]) + ', Radius: ' + str(key[3]))
                 print('Peak Reach: ' + "{:.4f}".format(averages_peak_reach[key]) + ', Time Past Solo per capita: ' + "{:.4f}".format(averages_time[key]) + ', Num Stranded: ' + str(averages_stranded[key]) + ', Peak Area: ' + "{:.4f}".format(averages_peak_area[key]))
+                print('Mean Peak Reach: ' + "{:.4f}".format(averages_mean_peak_reach[key]) + ', Mean Area: ' + "{:.4f}".format(averages_mean_area[key]))
 
             for v2v in v2v_list:
-                plot_metrics(radius_list, v2v, averages_peak_reach, averages_peak_area, averages_time)
+                plot_metrics(radius_list, v2v, averages_peak_reach, averages_peak_area, averages_time, averages_mean_peak_reach, averages_mean_area)
 
 
 def main_anim():
